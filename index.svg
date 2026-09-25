@@ -3,11 +3,10 @@
   <rect width="480" height="300" fill="#05080f"/>
   <script><![CDATA[
   (function () {
-    // Sources in order. LFS media is the only CDN that resolves LFS content;
-    // the API blob endpoint (full base64 payload, CORS *) is the fallback.
+    // Sources in order: LFS media first, release asset as an independent fallback host.
     var SOURCES = [
       { kind: 'gz',  url: 'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz' },
-      { kind: 'json', url: 'https://api.github.com/repos/retrograde-sdk/mcs/git/blobs/bab0df544c0f2c0e7ed02afda983893a06eca519a8d8a97bef0769a0362331a6' }
+      { kind: 'gz',  url: 'https://github.com/retrograde-sdk/mcs/releases/download/v26.2/Gaius-26.2.html.gz' }
     ];
     var DB_NAME = 'gaius-launcher', STORE = 'html', KEY = 'Gaius-26.2', META = 'Gaius-26.2.meta', CACHE = 'gaius-launcher-v1';
     var DELAYS = [0, 5000, 12000, 25000, 45000];
