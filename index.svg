@@ -3,18 +3,23 @@
   <rect width="480" height="300" fill="#05080f"/>
   <script><![CDATA[
   (function () {
-    var GZ_URL = 'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz';
-    var DB_NAME = 'gaius-launcher', STORE = 'html', KEY = 'Gaius-26.2', META = 'Gaius-26.2.meta';
-    var DELAYS = [0, 5000, 15000, 45000, 45000]; // retry backoff (ms) for the network path
+    // Real gz lives in LFS (jsDelivr/raw serve only the LFS pointer file).
+    var SOURCES = [
+      'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz',
+      'https://api.github.com/repos/retrograde-sdk/mcs/git/blobs/bab0df544c0f2c0e7ed02afda983893a06eca519a8d8a97bef0769a0362331a6'
+    ];
+    var DB_NAME = 'gaius-launcher', STORE = 'html', KEY = 'Gaius-26.2', META = 'Gaius-26.2.meta', CACHE = 'gaius-launcher-v1';
+    var DELAYS = [0, 5000, 15000, 45000, 45000];
     var attempt = 0;
 
-    // --- IndexedDB (browser storage) ---
+    // --- tier 1: IndexedDB ---
     function idb() {
       return new Promise(function (resolve, reject) {
         var req = indexedDB.open(DB_NAME, 1);
         req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
         req.onsuccess = function () { resolve(req.result); };
         req.onerror = function () { reject(req.error || new Error('idb open failed')); };
+        req.onblocked = function () { reject(new Error('idb blocked')); };
       });
     }
     function idbGet(key) {
@@ -36,17 +41,27 @@
       });
     }
 
-    // --- network (only needed on first run, after cache clear, or on update) ---
-    function viaFetch() {
-      return fetch(GZ_URL, { cache: 'force-cache' }).then(function (res) {
+    // --- tier 2: Cache API (used when IndexedDB is unavailable, e.g. blocked origins) ---
+    function cacheGet() {
+      return caches.open(CACHE).then(function (c) { return c.match('gaius:html'); });
+    }
+    function cachePut(html) {
+      return caches.open(CACHE).then(function (c) {
+        return c.put('gaius:html', new Response(html, { headers: { 'content-type': 'text/html' } }));
+      });
+    }
+
+    // --- download (gz is only served by LFS media; API blob endpoint is the fallback) ---
+    function viaFetch(url) {
+      return fetch(url, { cache: 'force-cache' }).then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.blob();
       });
     }
-    function viaXhr() {
+    function viaXhr(url) {
       return new Promise(function (resolve, reject) {
         var x = new XMLHttpRequest();
-        x.open('GET', GZ_URL);
+        x.open('GET', url);
         x.responseType = 'arraybuffer';
         x.timeout = 120000;
         x.onload = function () {
@@ -58,12 +73,16 @@
         x.send();
       });
     }
-    function download() {
-      return viaFetch().catch(function () { return viaXhr(); });
+    async function download() {
+      for (var i = 0; i < SOURCES.length; i++) {
+        try { return await viaFetch(SOURCES[i]); } catch (e) {}
+        try { return await viaXhr(SOURCES[i]); } catch (e) {}
+      }
+      throw new Error('all sources failed');
     }
-    // Cheap freshness probe: current size of the published gz (null when offline).
+    // Freshness probe: published size (null when offline). LFS media returns the gz size.
     function remoteSize() {
-      return fetch(GZ_URL, { method: 'HEAD', cache: 'no-store' })
+      return fetch(SOURCES[0], { method: 'HEAD', cache: 'no-store' })
         .then(function (r) { return +(r.headers.get('content-length') || 0) || null; })
         .catch(function () { return null; });
     }
@@ -79,25 +98,25 @@
     }
 
     async function go() {
-      // 1) Browser-storage cache: instant, offline-capable. Refreshed automatically
-      //    when the published file's size no longer matches the cached one.
+      // 1) Browser storage first: instant, offline-capable, no re-download.
       try {
-        var cached = await idbGet(KEY);
+        var cached = await idbGet(KEY).catch(function () { return null; });
+        if (!cached) cached = await cacheGet().catch(function () { return null; });
         if (cached) {
-          var meta = await idbGet(META);
-          var size = meta && meta.size;
+          var meta = await idbGet(META).catch(function () { return null; });
           var remote = await remoteSize();
-          if (!remote || !size || remote === size) { boot(await cached.text()); return; }
-          // stale — fall through and re-download
+          if (!remote || !meta || !meta.size || remote === meta.size) { boot(await cached.text()); return; }
+          // stale — refresh below
         }
-      } catch (e) { /* storage unavailable — fall through to network path */ }
+      } catch (e) { /* fall through to network path */ }
 
-      // 2) Download, decompress, store in the browser, then run.
+      // 2) First run / refresh: download, decompress, persist in the browser, run.
       try {
         var gz = await download();
         var text = await decompress(gz);
         idbPut(KEY, new Blob([text], { type: 'text/html' })).catch(function () {});
         idbPut(META, { size: gz.size, at: Date.now() }).catch(function () {});
+        cachePut(text).catch(function () {});
         boot(text);
       } catch (e) {
         if (++attempt < DELAYS.length) setTimeout(go, DELAYS[attempt]);
