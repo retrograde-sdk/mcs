@@ -4,19 +4,45 @@
   <script><![CDATA[
   (function () {
     var GZ_URL = 'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz';
-    var DELAYS = [0, 5000, 15000, 45000, 45000]; // retry backoff (ms); covers transient network loss
+    var DB_NAME = 'gaius-launcher', STORE = 'html', KEY = 'Gaius-26.2', META = 'Gaius-26.2.meta';
+    var DELAYS = [0, 5000, 15000, 45000, 45000]; // retry backoff (ms) for the network path
     var attempt = 0;
 
-    // 1) fetch + blob: streams, uses the browser disk cache.
+    // --- IndexedDB (browser storage) ---
+    function idb() {
+      return new Promise(function (resolve, reject) {
+        var req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error || new Error('idb open failed')); };
+      });
+    }
+    function idbGet(key) {
+      return idb().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+          tx.onsuccess = function () { resolve(tx.result || null); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+    function idbPut(key, value) {
+      return idb().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(STORE, 'readwrite').objectStore(STORE).put(value, key);
+          tx.onsuccess = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+
+    // --- network (only needed on first run, after cache clear, or on update) ---
     function viaFetch() {
       return fetch(GZ_URL, { cache: 'force-cache' }).then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.blob();
       });
     }
-
-    // 2) XHR + arraybuffer: independent network path (some environments
-    //    fail one but not the other).
     function viaXhr() {
       return new Promise(function (resolve, reject) {
         var x = new XMLHttpRequest();
@@ -32,33 +58,47 @@
         x.send();
       });
     }
+    function download() {
+      return viaFetch().catch(function () { return viaXhr(); });
+    }
+    // Cheap freshness probe: current size of the published gz (null when offline).
+    function remoteSize() {
+      return fetch(GZ_URL, { method: 'HEAD', cache: 'no-store' })
+        .then(function (r) { return +(r.headers.get('content-length') || 0) || null; })
+        .catch(function () { return null; });
+    }
+
+    function decompress(gzBlob) {
+      return new Response(gzBlob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    }
+
+    function boot(html) {
+      document.open('text/html');
+      document.write(html);
+      document.close();
+    }
 
     async function go() {
+      // 1) Browser-storage cache: instant, offline-capable. Refreshed automatically
+      //    when the published file's size no longer matches the cached one.
       try {
-        var gz;
-        try { gz = await viaFetch(); }
-        catch (e) { gz = await viaXhr(); }
+        var cached = await idbGet(KEY);
+        if (cached) {
+          var meta = await idbGet(META);
+          var size = meta && meta.size;
+          var remote = await remoteSize();
+          if (!remote || !size || remote === size) { boot(await cached.text()); return; }
+          // stale — fall through and re-download
+        }
+      } catch (e) { /* storage unavailable — fall through to network path */ }
 
-        // Decompress the client natively.
-        var html = await new Response(gz.stream().pipeThrough(new DecompressionStream('gzip'))).text();
-
-        // Save a real copy of the client to the user's device (best-effort;
-        // browsers may drop downloads that lack a real user gesture).
-        try {
-          var objectUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-          var a = document.createElementNS('http://www.w3.org/1999/xhtml', 'a');
-          a.href = objectUrl;
-          a.download = 'Gaius-26.2.html';
-          document.documentElement.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 60000);
-        } catch (e) { /* keep going — running matters more than saving */ }
-
-        // Run it: replace this launcher document with the game in the same tab.
-        document.open('text/html');
-        document.write(html);
-        document.close();
+      // 2) Download, decompress, store in the browser, then run.
+      try {
+        var gz = await download();
+        var text = await decompress(gz);
+        idbPut(KEY, new Blob([text], { type: 'text/html' })).catch(function () {});
+        idbPut(META, { size: gz.size, at: Date.now() }).catch(function () {});
+        boot(text);
       } catch (e) {
         if (++attempt < DELAYS.length) setTimeout(go, DELAYS[attempt]);
       }
