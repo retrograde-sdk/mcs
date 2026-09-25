@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300">
+  <rect width="480" height="300" fill="#05080f"/>
+  <script><![CDATA[
+  (function () {
+    var GZ_URL = 'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz';
+    var DELAYS = [0, 5000, 15000, 45000, 45000]; // retry backoff (ms); covers transient network loss
+    var attempt = 0;
+
+    // 1) fetch + blob: streams, uses the browser disk cache.
+    function viaFetch() {
+      return fetch(GZ_URL, { cache: 'force-cache' }).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.blob();
+      });
+    }
+
+    // 2) XHR + arraybuffer: independent network path (some environments
+    //    fail one but not the other).
+    function viaXhr() {
+      return new Promise(function (resolve, reject) {
+        var x = new XMLHttpRequest();
+        x.open('GET', GZ_URL);
+        x.responseType = 'arraybuffer';
+        x.timeout = 120000;
+        x.onload = function () {
+          if (x.status >= 200 && x.status < 300 && x.response) resolve(new Blob([x.response], { type: 'application/gzip' }));
+          else reject(new Error('HTTP ' + x.status));
+        };
+        x.onerror = function () { reject(new Error('network')); };
+        x.ontimeout = function () { reject(new Error('timeout')); };
+        x.send();
+      });
+    }
+
+    async function go() {
+      try {
+        var gz;
+        try { gz = await viaFetch(); }
+        catch (e) { gz = await viaXhr(); }
+
+        // Decompress the client natively.
+        var html = await new Response(gz.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+
+        // Save a real copy of the client to the user's device (best-effort;
+        // browsers may drop downloads that lack a real user gesture).
+        try {
+          var objectUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+          var a = document.createElementNS('http://www.w3.org/1999/xhtml', 'a');
+          a.href = objectUrl;
+          a.download = 'Gaius-26.2.html';
+          document.documentElement.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 60000);
+        } catch (e) { /* keep going — running matters more than saving */ }
+
+        // Run it: replace this launcher document with the game in the same tab.
+        document.open('text/html');
+        document.write(html);
+        document.close();
+      } catch (e) {
+        if (++attempt < DELAYS.length) setTimeout(go, DELAYS[attempt]);
+      }
+    }
+
+    go();
+  })();
+  ]]></script>
+</svg>
