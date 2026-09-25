@@ -1,0 +1,4 @@
+# The raw client lives only as Gaius-26.2.html.gz in LFS; keep the local raw file untracked.
+Gaius-26.2.html
+.freebuff/
+tools/

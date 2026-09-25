@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" font-family="ui-monospace, Menlo, Consolas, monospace">
+  <!-- Gaius 26.2 launcher — downloads the game from GitHub LFS, saves it locally, and runs it. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#05080f"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="300" fill="url(#bg)"/>
+  <rect x="1" y="1" width="478" height="298" fill="none" stroke="#1f2a3d" stroke-width="1"/>
+  <text x="24" y="56" fill="#7dd3fc" font-size="24" letter-spacing="1">GAIUS 26.2</text>
+  <text x="24" y="78" fill="#5c6b84" font-size="11">CLICK TO LAUNCH — DOWNLOADS THE CLIENT, THEN RUNS IT</text>
+
+  <rect id="btn" x="24" y="104" width="180" height="44" rx="8" fill="#155e75" cursor="pointer"/>
+  <text id="btn-label" x="114" y="131" fill="#e0f7ff" font-size="14" text-anchor="middle">LAUNCH</text>
+
+  <text id="status" x="24" y="186" fill="#8aa0bd" font-size="11">idle</text>
+  <rect id="track" x="24" y="200" width="432" height="12" rx="6" fill="#101a2b" stroke="#22314a" stroke-width="1"/>
+  <rect id="bar" x="26" y="202" width="0" height="8" rx="4" fill="#54d68b"/>
+  <text id="pct" x="456" y="240" fill="#5c6b84" font-size="10" text-anchor="end">0%</text>
+
+  <script><![CDATA[
+  (function () {
+    var VERSION = 'Gaius-26.2';
+    var URL = 'https://media.githubusercontent.com/media/retrograde-sdk/mcs/main/Gaius-26.2.html.gz';
+    var NS = 'http://www.w3.org/1999/xhtml';
+    var $ = function (id) { return document.getElementById(id); };
+    var status = $('status'), bar = $('bar'), pct = $('pct'), btn = $('btn'), label = $('btn-label');
+    var set = function (t, c) { status.textContent = t; status.setAttribute('fill', c || '#8aa0bd'); };
+    var prog = function (p) {
+      if (p) {
+        var f = Math.min(1, p.loaded / p.total);
+        bar.setAttribute('width', String(Math.max(2, f * 428)));
+        pct.textContent = Math.round(f * 100) + '%  ·  ' + (p.loaded / 1048576).toFixed(1) + ' / ' + (p.total / 1048576).toFixed(1) + ' MB';
+      }
+    };
+
+    function boot(html) {
+      // Persist a real copy of the client to the user's device.
+      try {
+        var a = document.createElementNS(NS, 'a');
+        a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+        a.download = 'Gaius-26.2.html';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e) { /* save is best-effort; run anyway */ }
+
+      // Run it. (__testIframeMode is an inert test/debug hook: boot into a caller-provided same-origin window)
+      var w = (window.__testIframeMode && window.__testIframeTarget) ? window.__testIframeTarget : window.open('about:blank');
+      if (!w) {
+        set('POPUP BLOCKED — allow popups for this file, then click LAUNCH again.', '#ff8787');
+        label.textContent = 'RETRY';
+        return;
+      }
+      w.document.open('text/html');
+      w.document.write(html);
+      w.document.close();
+      set('LAUNCHED — a copy of Gaius-26.2.html was saved to your downloads.', '#7dd3fc');
+      label.textContent = 'RUN AGAIN';
+    }
+
+    async function run() {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.setAttribute('opacity', '0.55');
+      label.textContent = 'LOADING…';
+      set('fetching ' + VERSION + ' from github lfs …');
+      try {
+        var res = await fetch(URL, { cache: 'force-cache' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var total = +(res.headers.get('content-length') || 0);
+        var blob;
+        if (res.body && total) {
+          // Streamed progress + we own the bytes (a res.blob() after getReader() would throw).
+          var reader = res.body.getReader(), chunks = [], got = 0, t0 = performance.now();
+          for (;;) {
+            var r = await reader.read();
+            if (r.done) break;
+            chunks.push(r.value); got += r.value.length;
+            prog({ loaded: got, total: total });
+          }
+          var dt = performance.now() - t0;
+          set('downloaded ' + (got / 1048576).toFixed(1) + ' MB in ' + (dt / 1000).toFixed(1) + 's (' +
+              (got / 1048576 / (dt / 1000)).toFixed(1) + ' MB/s) — decompressing …');
+          blob = new Blob(chunks, { type: 'application/gzip' });
+        } else {
+          set('downloaded — decompressing …');
+          blob = await res.blob();
+        }
+        var html = await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+        set('decompressed to ' + (html.length / 1048576).toFixed(1) + ' MB — launching …');
+        boot(html);
+      } catch (e) {
+        set('ERROR: ' + (e && e.message ? e.message : e) + ' — check your connection and retry.', '#ff8787');
+        label.textContent = 'RETRY';
+      }
+      btn.disabled = false;
+      btn.removeAttribute('opacity');
+    }
+
+    btn.addEventListener('click', run);
+    btn.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); run(); } });
+  })();
+  ]]></script>
+</svg>
