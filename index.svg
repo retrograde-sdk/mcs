@@ -108,9 +108,13 @@
     }
 
     function boot(html) {
-      document.open('text/html');
-      document.write(html);
-      document.close();
+      // SVG documents are XML, so document.open()/write() is unavailable there.
+      // Boot the game as a full-viewport same-origin iframe instead: browser
+      // storage (the game's own IndexedDB included) keeps working.
+      var f = document.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
+      f.setAttribute('style', 'position:fixed;inset:0;width:100%;height:100%;border:0;background:#000');
+      f.setAttribute('srcdoc', html);
+      (document.body || document.documentElement).appendChild(f);
     }
 
     async function go() {
